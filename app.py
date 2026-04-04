@@ -5,15 +5,14 @@ from streamlit_gsheets import GSheetsConnection
 import io
 import datetime
 
-# --- 1. CONFIGURAÇÃO DE UTILIZADORES ---
-nomes = ["Administrador"] + [f"Enfermeiro {i}" for i in range(1, 51)]
-utilizadores = ["admin"] + [f"enf{i}" for i in range(1, 51)]
-passwords = ["admin123"] + [f"pass{i}" for i in range(1, 51)]
+# --- 1. CONFIGURAÇÃO DE UTILIZADORES VIA SECRETS ---
+if "credentials" in st.secrets:
+    credentials = st.secrets["credentials"].to_dict()
+else:
+    st.error("Erro: Credenciais não configuradas nos Secrets.")
+    st.stop()
 
-credentials = {"usernames": {}}
-for u, n, p in zip(utilizadores, nomes, passwords):
-    credentials["usernames"][u] = {"name": n, "password": p}
-
+# O Hasher continua a ser necessário para validar as passwords
 stauth.Hasher.hash_passwords(credentials)
 
 # --- 2. INICIALIZAÇÃO DO AUTENTICADOR ---
