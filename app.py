@@ -12,7 +12,7 @@ else:
     st.error("Erro: Credenciais não configuradas nos Secrets.")
     st.stop()
 
-# O Hasher continua a ser necessário para validar as passwords
+# O Hasher é necessário para validar as passwords
 stauth.Hasher.hash_passwords(credentials)
 
 # --- 2. INICIALIZAÇÃO DO AUTENTICADOR ---
@@ -41,11 +41,14 @@ else:
     # --- LIGAÇÃO À GOOGLE SHEET ---
     conn = st.connection("gsheets", type=GSheetsConnection)
     
-    # Função para ler dados da folha (Ajusta "Folha1" se necessário)
+    # Função para ler dados da folha
     def carregar_dados():
         try:
-            return conn.read(worksheet="Folha1", ttl=0)
-        except:
+            # Lê explicitamente a aba Folha1
+            data = conn.read(worksheet="Folha1", ttl=0)
+            # Remove linhas totalmente vazias que o Google Sheets por vezes envia
+            return data.dropna(how='all')
+        except Exception:
             return pd.DataFrame(columns=['Data', 'Turno', 'Enfermeiro'])
 
     df_base = carregar_dados()
@@ -63,7 +66,7 @@ else:
             limite_vagas = 1 if turno_sel == "Noite" else 3
             data_str = data_sel.strftime('%Y-%m-%d')
             
-            # Garantir que a coluna Data no DF é string para comparação
+            # Garante que a coluna Data é tratada como string para comparação fiável
             df_base['Data'] = df_base['Data'].astype(str)
             
             # Verificar ocupação total do turno naquela data
@@ -88,7 +91,8 @@ else:
                     'Enfermeiro': [nome_atual]
                 })
                 df_final = pd.concat([df_base, novo_registo], ignore_index=True)
-                # Escrita na Folha
+                
+                # Atualiza a folha de cálculo
                 conn.update(worksheet="Folha1", data=df_final)
                 st.success("Disponibilidade registada e guardada!")
                 st.rerun()
@@ -116,6 +120,7 @@ else:
 
     if not df_base.empty:
         df_visualizacao = df_base.copy()
+        # Converte para datetime para garantir ordenação cronológica correta
         df_visualizacao['Data_DT'] = pd.to_datetime(df_visualizacao['Data'])
         df_visualizacao = df_visualizacao.sort_values(by='Data_DT')
         df_visualizacao['Data_Label'] = df_visualizacao['Data_DT'].dt.strftime('%d/%m')
@@ -123,6 +128,7 @@ else:
         df_visualizacao['Sigla'] = df_visualizacao['Turno'].map({'Manhã': 'M', 'Tarde': 'T', 'Noite': 'N'})
         
         try:
+            # Cria a tabela dinâmica estilo calendário
             grelha = df_visualizacao.pivot_table(
                 index='Enfermeiro', 
                 columns='Data_Label', 
@@ -139,7 +145,8 @@ else:
         buffer = io.BytesIO()
         with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
             if is_admin:
-                grelha.to_excel(writer, sheet_name='Mapa_Geral')
+                if 'grelha' in locals():
+                    grelha.to_excel(writer, sheet_name='Mapa_Geral')
                 df_base.to_excel(writer, index=False, sheet_name='Lista_Completa')
                 file_out = "escala_geral.xlsx"
             else:
