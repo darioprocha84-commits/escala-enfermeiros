@@ -41,10 +41,10 @@ else:
     # --- LIGAÇÃO À GOOGLE SHEET ---
     conn = st.connection("gsheets", type=GSheetsConnection)
     
-    # Função para ler dados da folha
+    # Função para ler dados da folha (Ajusta "Folha1" se necessário)
     def carregar_dados():
         try:
-            return conn.read(ttl=0)
+            return conn.read(worksheet="Folha1", ttl=0)
         except:
             return pd.DataFrame(columns=['Data', 'Turno', 'Enfermeiro'])
 
@@ -62,6 +62,9 @@ else:
         if btn_submeter:
             limite_vagas = 1 if turno_sel == "Noite" else 3
             data_str = data_sel.strftime('%Y-%m-%d')
+            
+            # Garantir que a coluna Data no DF é string para comparação
+            df_base['Data'] = df_base['Data'].astype(str)
             
             # Verificar ocupação total do turno naquela data
             ocupacao = len(df_base[
@@ -85,7 +88,8 @@ else:
                     'Enfermeiro': [nome_atual]
                 })
                 df_final = pd.concat([df_base, novo_registo], ignore_index=True)
-                conn.update(data=df_final)
+                # Escrita na Folha
+                conn.update(worksheet="Folha1", data=df_final)
                 st.success("Disponibilidade registada e guardada!")
                 st.rerun()
             else:
@@ -101,7 +105,7 @@ else:
             col_info.write(f"📅 {row['Data']} | 🕒 {row['Turno']}")
             if col_btn.button("Retirar", key=f"btn_{idx}"):
                 df_apos_remocao = df_base.drop(idx).reset_index(drop=True)
-                conn.update(data=df_apos_remocao)
+                conn.update(worksheet="Folha1", data=df_apos_remocao)
                 st.rerun()
     else:
         st.write("Sem turnos marcados.")
@@ -112,7 +116,6 @@ else:
 
     if not df_base.empty:
         df_visualizacao = df_base.copy()
-        # Garantir que a coluna Data é tratada como data para ordenação
         df_visualizacao['Data_DT'] = pd.to_datetime(df_visualizacao['Data'])
         df_visualizacao = df_visualizacao.sort_values(by='Data_DT')
         df_visualizacao['Data_Label'] = df_visualizacao['Data_DT'].dt.strftime('%d/%m')
