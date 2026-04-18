@@ -4,6 +4,7 @@ import pandas as pd
 from streamlit_gsheets import GSheetsConnection
 import io
 import datetime
+import calendar
 
 # --- 1. CONFIGURAÇÃO DE UTILIZADORES VIA SECRETS ---
 if "credentials" in st.secrets:
@@ -12,7 +13,6 @@ else:
     st.error("Erro: Credenciais não configuradas nos Secrets.")
     st.stop()
 
-# O Hasher é necessário para validar as passwords
 stauth.Hasher.hash_passwords(credentials)
 
 # --- 2. INICIALIZAÇÃO DO AUTENTICADOR ---
@@ -41,21 +41,56 @@ else:
     # --- LIGAÇÃO À GOOGLE SHEET ---
     conn = st.connection("gsheets", type=GSheetsConnection)
     
-    # Função para ler dados da folha
     def carregar_dados():
         try:
-            # Lê explicitamente a aba Folha1
             data = conn.read(worksheet="Folha1", ttl=0)
-            # Remove linhas totalmente vazias que o Google Sheets por vezes envia
             return data.dropna(how='all')
         except Exception:
             return pd.DataFrame(columns=['Data', 'Turno', 'Enfermeiro'])
 
     df_base = carregar_dados()
+    df_base['Data'] = df_base['Data'].astype(str)
 
     st.title("Escala de Trabalho - Linha de Saúde Açores")
 
-    # --- 4. ÁREA DE REGISTO (PERMITE MÚLTIPLOS TURNOS POR DIA) ---
+    # --- NOVO: PAINEL DE DISPONIBILIDADE (RESUMO DE VAGAS) ---
+    st.header("Vagas Disponíveis para o Mês")
+    
+    # Lógica para gerar todos os dias do mês atual
+    hoje = datetime.date.today()
+    _, ultimo_dia = calendar.monthrange(hoje.year, hoje.month)
+    datas_mes = [datetime.date(hoje.year, hoje.month, dia).strftime('%Y-%m-%d') for dia in range(1, ultimo_dia + 1)]
+    
+    # Criar DataFrame de estrutura de vagas
+    estrutura = []
+    for d in datas_mes:
+        for t, lim in [("Manhã", 3), ("Tarde", 3), ("Noite", 1)]:
+            estrutura.append({"Data": d, "Turno": t, "Limite": lim})
+    
+    df_vagas = pd.DataFrame(estrutura)
+    
+    # Contar ocupação atual
+    if not df_base.empty:
+        ocupacao = df_base.groupby(['Data', 'Turno']).size().reset_index(name='Ocupados')
+        df_vagas = df_vagas.merge(ocupacao, on=['Data', 'Turno'], how='left').fillna(0)
+    else:
+        df_vagas['Ocupados'] = 0
+
+    df_vagas['Vagas'] = (df_vagas['Limite'] - df_vagas['Ocupados']).astype(int)
+    
+    # Criar a grelha de visualização de vagas
+    df_vagas['Data_Curta'] = pd.to_datetime(df_vagas['Data']).dt.strftime('%d/%m')
+    mapa_vagas = df_vagas.pivot(index='Turno', columns='Data_Curta', values='Vagas')
+    
+    # Reordenar linhas para a ordem natural
+    mapa_vagas = mapa_vagas.reindex(["Manhã", "Tarde", "Noite"])
+    
+    st.write("O número em cada célula indica quantas vagas ainda existem:")
+    st.dataframe(mapa_vagas, use_container_width=True)
+
+    st.divider()
+
+    # --- 4. ÁREA DE REGISTO ---
     with st.expander("Marcar Disponibilidade"):
         with st.form("registo_disponibilidade"):
             data_sel = st.date_input("Selecione o Dia:", datetime.date.today())
@@ -66,16 +101,8 @@ else:
             limite_vagas = 1 if turno_sel == "Noite" else 3
             data_str = data_sel.strftime('%Y-%m-%d')
             
-            # Garante que a coluna Data é tratada como string para comparação fiável
-            df_base['Data'] = df_base['Data'].astype(str)
+            ocupacao_atual = len(df_base[(df_base['Data'] == data_str) & (df_base['Turno'] == turno_sel)])
             
-            # Verificar ocupação total do turno naquela data
-            ocupacao = len(df_base[
-                (df_base['Data'] == data_str) & 
-                (df_base['Turno'] == turno_sel)
-            ])
-            
-            # Verifica se o enfermeiro já tem este turno específico neste dia
             ja_tem_este_turno = not df_base[
                 (df_base['Data'] == data_str) & 
                 (df_base['Turno'] == turno_sel) &
@@ -84,20 +111,14 @@ else:
 
             if ja_tem_este_turno:
                 st.error(f"Já registou disponibilidade para o turno da {turno_sel} no dia {data_str}.")
-            elif ocupacao < limite_vagas:
-                novo_registo = pd.DataFrame({
-                    'Data': [data_str], 
-                    'Turno': [turno_sel], 
-                    'Enfermeiro': [nome_atual]
-                })
+            elif ocupacao_atual < limite_vagas:
+                novo_registo = pd.DataFrame({'Data': [data_str], 'Turno': [turno_sel], 'Enfermeiro': [nome_atual]})
                 df_final = pd.concat([df_base, novo_registo], ignore_index=True)
-                
-                # Atualiza a folha de cálculo
                 conn.update(worksheet="Folha1", data=df_final)
-                st.success("Disponibilidade registada e guardada!")
+                st.success("Disponibilidade registada!")
                 st.rerun()
             else:
-                st.error(f"O turno da {turno_sel} para o dia {data_str} já está completo.")
+                st.error(f"Lotação esgotada para {turno_sel} no dia {data_str}.")
 
     # --- 5. GESTÃO DE TURNOS PRÓPRIOS ---
     st.subheader("As Minhas Marcações")
@@ -114,22 +135,19 @@ else:
     else:
         st.write("Sem turnos marcados.")
 
-    # --- 6. VISUALIZAÇÃO EM GRELHA ---
+    # --- 6. VISUALIZAÇÃO EM GRELHA (QUEM ESTÁ ONDE) ---
     st.divider()
-    st.header("Mapa Mensal de Disponibilidades")
+    st.header("Escala Nominal (Quem está escalado)")
 
     if not df_base.empty:
-        df_visualizacao = df_base.copy()
-        # Converte para datetime para garantir ordenação cronológica correta
-        df_visualizacao['Data_DT'] = pd.to_datetime(df_visualizacao['Data'])
-        df_visualizacao = df_visualizacao.sort_values(by='Data_DT')
-        df_visualizacao['Data_Label'] = df_visualizacao['Data_DT'].dt.strftime('%d/%m')
-        
-        df_visualizacao['Sigla'] = df_visualizacao['Turno'].map({'Manhã': 'M', 'Tarde': 'T', 'Noite': 'N'})
+        df_vis = df_base.copy()
+        df_vis['Data_DT'] = pd.to_datetime(df_vis['Data'])
+        df_vis = df_vis.sort_values(by='Data_DT')
+        df_vis['Data_Label'] = df_vis['Data_DT'].dt.strftime('%d/%m')
+        df_vis['Sigla'] = df_vis['Turno'].map({'Manhã': 'M', 'Tarde': 'T', 'Noite': 'N'})
         
         try:
-            # Cria a tabela dinâmica estilo calendário
-            grelha = df_visualizacao.pivot_table(
+            grelha = df_vis.pivot_table(
                 index='Enfermeiro', 
                 columns='Data_Label', 
                 values='Sigla', 
@@ -138,7 +156,7 @@ else:
             ).fillna('')
             st.dataframe(grelha, use_container_width=True)
         except Exception:
-            st.warning("Erro ao gerar o mapa visual.")
+            st.warning("Erro ao gerar o mapa nominal.")
 
         # --- 7. EXPORTAÇÃO ---
         st.subheader("Exportar para Excel")
@@ -146,13 +164,12 @@ else:
         with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
             if is_admin:
                 if 'grelha' in locals():
-                    grelha.to_excel(writer, sheet_name='Mapa_Geral')
-                df_base.to_excel(writer, index=False, sheet_name='Lista_Completa')
-                file_out = "escala_geral.xlsx"
+                    grelha.to_excel(writer, sheet_name='Escala_Nominal')
+                mapa_vagas.to_excel(writer, sheet_name='Vagas_Disponiveis')
+                df_base.to_excel(writer, index=False, sheet_name='Dados_Brutos')
+                file_out = "escala_completa_LSA.xlsx"
             else:
                 meus_turnos.to_excel(writer, index=False, sheet_name='Meus_Turnos')
                 file_out = f"escala_{username_atual}.xlsx"
 
         st.download_button("Descarregar Excel", buffer.getvalue(), file_out)
-    else:
-        st.info("Aguardando marcações na base de dados.")
